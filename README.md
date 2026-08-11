@@ -145,22 +145,39 @@ func (d docs) Emit(g *gogen.Generator) ([]gogen.File, error) {
 out, err := gogen.Run(cfg, docs{})
 ```
 
-An emitter's options live in its own top-level config section, decoded strictly
-via `cfg.Section("mysection", &opts)` — `cppnames.FromConfig` is the worked
-example. Emitters producing Go source can reuse `gogen.Pascal`,
-`gogen.CommentBlock`, and `gogen.FormatFile`.
+**[`example/emitter/`](example/emitter) is the working version of that sketch** —
+one file holding an emitter and the `main` that composes it, with its own config
+and committed golden output. CI runs it in `-check` mode, so the extension path
+is compiled and exercised rather than merely described. Run it with:
 
-The built-in `cppnames` emitter is exactly such a plugin: it scrapes
-`const char*` scalars and `std::array<std::pair<...>>` tables out of a C++
-header, resolving entries whose value references another symbol, and refuses to
-emit when a table parses short or a declaration is wrapped across lines — the
-two ways an entry can go missing without anything failing.
+```sh
+go run ./example/emitter -config example/emitter/rosidl-gen.yaml
+```
+
+The shipped CLI registers only the built-in emitter, so adding your own means
+writing a `main` like that one. There is no config-driven loading of third-party
+emitters: Go's runtime plugin support is Linux-only and requires an identical
+toolchain and build flags, which is a worse contract than a twenty-line program.
+
+An emitter's options live in its own top-level config section, decoded strictly
+via `cfg.Section("mysection", &opts)`; anything left unclaimed should be rejected
+with `cfg.UnclaimedSections()`, which is what keeps a typo loud. Emitters
+producing Go source can reuse `gogen.Pascal`, `gogen.CommentBlock`, and
+`gogen.FormatFile`. Note that `GoName` returns the *shared* identifier for a
+service — apply the `<prefix>Request` / `<prefix>Response` convention yourself if
+you need the per-message names.
+
+The built-in `cppnames` emitter is the other worked example, and a less trivial
+one: it scrapes `const char*` scalars and `std::array<std::pair<...>>` tables out
+of a C++ header, resolves entries whose value references another symbol, and
+refuses to emit when a table parses short or a declaration is wrapped across
+lines — the two ways an entry can go missing without anything failing.
 
 ## Verification
 
 - `go test ./...` — parser and name-header unit tests
 - CI (`.github/workflows/ci.yaml`) — gofmt, vet, tests, and a byte-check of the
-  committed golden output under `example/out`
+  committed golden output under `example/out` and `example/emitter/out`
 - `scripts/verify-reference.sh` — check the generator against a project outside
   this repository that already tracks its generated output. Point `REF_CONFIG`
   at that project's config; supply `ROS_SHARE` (or `ROS_SHARE_GIT`) when it

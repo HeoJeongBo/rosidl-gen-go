@@ -1,0 +1,19 @@
+# Config for the custom-emitter example. It reuses the fixtures next door
+# (paths resolve against this file) and generates a narrower set than
+# ../rosidl-gen.yaml, so the two golden trees stay distinct.
+#
+# There is no `names:` section here: the built-in cppnames emitter is optional,
+# and this run does not want it.
+
+out: out
+package: demo
+
+search_paths:
+  - ../msg
+
+generate:
+  - demo_msgs/msg/State
+
+# Claimed by ./main.go, not by the core schema.
+docs:
+  out: out/interfaces.md
