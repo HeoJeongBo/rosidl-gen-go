@@ -1,0 +1,14 @@
+{
+	"name": "rosidl-gen-go",
+	"dockerComposeFile": "docker-compose.yaml",
+	"service": "dev",
+	"workspaceFolder": "/workspace",
+	"postStartCommand": "go run . -config example/rosidl-gen.yaml -check || echo 'golden output does not match; regenerate it and check the diff' >&2",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.go"
+			]
+		}
+	}
+}

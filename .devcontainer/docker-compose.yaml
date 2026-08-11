@@ -1,0 +1,23 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: sleep infinity
+
+    volumes:
+      - type: bind
+        source: ..
+        target: /workspace
+
+      - type: volume
+        source: gomodcache
+        target: /root/go/pkg/mod
+      - type: volume
+        source: gobuildcache
+        target: /root/.cache/go-build
+
+volumes:
+  gomodcache:
+  gobuildcache:

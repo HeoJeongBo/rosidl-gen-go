@@ -1,0 +1,12 @@
+out: out
+package: demo
+
+search_paths:
+  - msg
+
+generate:
+  - demo_msgs/**
+
+names:
+  header: include/names.h
+  out: out/names.g.go

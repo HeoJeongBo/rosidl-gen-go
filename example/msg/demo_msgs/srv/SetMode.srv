@@ -1,0 +1,7 @@
+# Switch the device into the requested mode.
+
+# One of the State MODE_* constants.
+uint8 mode
+---
+bool success
+string message
