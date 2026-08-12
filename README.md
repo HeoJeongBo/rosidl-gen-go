@@ -161,11 +161,23 @@ toolchain and build flags, which is a worse contract than a twenty-line program.
 
 An emitter's options live in its own top-level config section, decoded strictly
 via `cfg.Section("mysection", &opts)`; anything left unclaimed should be rejected
-with `cfg.UnclaimedSections()`, which is what keeps a typo loud. Emitters
-producing Go source can reuse `gogen.Pascal`, `gogen.CommentBlock`, and
-`gogen.FormatFile`. Note that `GoName` returns the *shared* identifier for a
-service — apply the `<prefix>Request` / `<prefix>Response` convention yourself if
-you need the per-message names.
+with `cfg.UnclaimedSections()`, which is what keeps a typo loud.
+
+What an emitter can ask the generator:
+
+| | |
+| --- | --- |
+| `Selected()` | the resolved interface set, sorted |
+| `GoName(n)` | the Go identifier for a message, or a service's shared prefix |
+| `MessageIdent(n, m)` | the identifier for one message body — a `.srv` becomes `<prefix>Request` and `<prefix>Response` |
+| `GoType(t)` | the Go type a field is emitted as, plus the import qualifiers it needs |
+| `Externals()` / `ExternalType(n)` | interfaces bound by `external`, which are deliberately absent from `Selected` |
+| `Provenance(n)` | why an interface was selected: a pattern, or the field that referenced it |
+| `Index()` | the parsed definitions |
+| `Config()` | paths, `imports`, and your own section |
+
+Emitters producing Go source can also reuse `gogen.Pascal`,
+`gogen.CommentBlock`, `gogen.FieldNote`, and `gogen.FormatFile`.
 
 The built-in `cppnames` emitter is the other worked example, and a less trivial
 one: it scrapes `const char*` scalars and `std::array<std::pair<...>>` tables out

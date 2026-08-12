@@ -463,6 +463,26 @@ func (g *Generator) emitDefaults(b *strings.Builder, ident string, m rosidl.Mess
 	return nil
 }
 
+// GoType renders the Go type a field is emitted as — "[3]float32",
+// "[]Reading", "ros.Header" — together with the import qualifiers it needs.
+// Resolve must have run.
+//
+// A qualifier maps to an import path through the config's `imports`; a
+// qualifier with no entry there is a standard-library path, e.g. "fmt".
+func (g *Generator) GoType(t rosidl.Type) (goType string, qualifiers []string, err error) {
+	imports := map[string]bool{}
+	s, err := g.goType(t, imports)
+	if err != nil {
+		return "", nil, err
+	}
+	return s, sortedKeys(imports), nil
+}
+
+// FieldNote is the trailing comment the generator puts on a field for the .msg
+// information a Go type cannot express: sequence and string upper bounds, and
+// declared defaults. It is empty when there is nothing to say.
+func FieldNote(f rosidl.Field) string { return fieldNote(f) }
+
 // fieldNote annotates the Go field with .msg information the Go type cannot
 // express: sequence upper bounds, string bounds and declared defaults.
 func fieldNote(f rosidl.Field) string {

@@ -309,11 +309,18 @@ func matchName(pattern string, n Name) (bool, error) {
 		}
 		return parts[0] == n.Package, nil
 	case 3:
+		// Validate the kind rather than just failing to match it: `pkg/action/T`
+		// is a typo, and reporting it as "matched no interface" sends the reader
+		// looking for a missing definition.
+		if parts[1] != string(KindMsg) && parts[1] != string(KindSrv) {
+			return false, fmt.Errorf("malformed pattern %q: unknown kind %q; want %q or %q",
+				pattern, parts[1], KindMsg, KindSrv)
+		}
 		if parts[0] != n.Package || parts[1] != string(n.Kind) {
 			return false, nil
 		}
 		return parts[2] == "*" || parts[2] == n.Type, nil
 	default:
-		return false, fmt.Errorf("malformed pattern %q", pattern)
+		return false, fmt.Errorf("malformed pattern %q; want `pkg/**`, `pkg/msg/*` or `pkg/kind/Type`", pattern)
 	}
 }

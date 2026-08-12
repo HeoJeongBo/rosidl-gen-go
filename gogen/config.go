@@ -65,6 +65,11 @@ type EmitOptions struct {
 	AsError *bool `yaml:"as_error"`
 }
 
+// AsErrorEnabled reports whether AsError() is emitted on service responses
+// carrying the success/message pair. Unset means on, so an emitter cannot read
+// the AsError field directly and get the right answer.
+func (e EmitOptions) AsErrorEnabled() bool { return e.asError() }
+
 func (e EmitOptions) asError() bool { return e.AsError == nil || *e.AsError }
 
 // LoadConfig reads and validates the config at path.
@@ -76,23 +81,41 @@ func (e EmitOptions) asError() bool { return e.AsError == nil || *e.AsError }
 func LoadConfig(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
+		// os.ReadFile's message names the path but nothing else; a missing
+		// config is the most likely first-run failure, so say what to do.
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: no such config; write one (`rosidl-gen init` prints a skeleton) or pass -config", path)
+		}
 		return nil, err
 	}
+	return ParseConfig(b, filepath.Dir(path), path)
+}
 
+// ParseConfig decodes a config that is already in memory. dir is what every
+// relative path in it resolves against, and name is used in error messages.
+//
+// LoadConfig is the usual entry point; this exists because a Config built as a
+// struct literal has no directory and would silently resolve paths against the
+// process working directory.
+func ParseConfig(b []byte, dir, name string) (*Config, error) {
 	f, err := parser.ParseBytes(b, 0)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	if len(f.Docs) != 1 || f.Docs[0].Body == nil {
-		return nil, fmt.Errorf("%s: expected a single yaml document", path)
+	if len(f.Docs) == 0 || (len(f.Docs) == 1 && f.Docs[0].Body == nil) {
+		return nil, fmt.Errorf("%s: config is empty", name)
+	}
+	if len(f.Docs) != 1 {
+		return nil, fmt.Errorf("%s: expected a single yaml document, got %d", name, len(f.Docs))
 	}
 	mapping, ok := f.Docs[0].Body.(*ast.MappingNode)
 	if !ok {
-		return nil, fmt.Errorf("%s: config must be a mapping", path)
+		return nil, fmt.Errorf("%s: config must be a mapping of keys, e.g. `out: internal/ros`", name)
 	}
 
+	path := name
 	c := Config{
-		dir:     filepath.Dir(path),
+		dir:     dir,
 		extra:   map[string]ast.Node{},
 		claimed: map[string]bool{},
 	}

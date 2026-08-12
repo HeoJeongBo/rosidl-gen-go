@@ -7,6 +7,8 @@ package demo
 // _Response halves). A contract test can reflect over it to prove every struct
 // still matches the definition it came from.
 var GeneratedTypes = map[string]any{
-	"demo_msgs/msg/Reading": Reading{},
-	"demo_msgs/msg/State":   State{},
+	"demo_msgs/msg/Reading":          Reading{},
+	"demo_msgs/msg/State":            State{},
+	"demo_msgs/srv/SetMode_Request":  SetModeRequest{},
+	"demo_msgs/srv/SetMode_Response": SetModeResponse{},
 }

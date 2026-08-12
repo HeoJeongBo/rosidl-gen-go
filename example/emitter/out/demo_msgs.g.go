@@ -3,6 +3,10 @@
 
 package demo
 
+import (
+	"fmt"
+)
+
 // ReadingType is the rcl typename of demo_msgs/msg/Reading.
 const ReadingType = "demo_msgs/msg/Reading"
 
@@ -53,4 +57,34 @@ func NewState() State {
 	return State{
 		RateHz: 10.0,
 	}
+}
+
+// SetModeType is the rcl typename of demo_msgs/srv/SetMode.
+const SetModeType = "demo_msgs/srv/SetMode"
+
+// SetMode service: demo_msgs/srv/SetMode
+// Switch the device into the requested mode.
+
+// SetModeRequest is demo_msgs/srv/SetMode_Request.
+//
+// Field order is the CDR wire layout.
+type SetModeRequest struct {
+	// One of the State MODE_* constants.
+	Mode uint8
+}
+
+// SetModeResponse is demo_msgs/srv/SetMode_Response.
+//
+// Field order is the CDR wire layout.
+type SetModeResponse struct {
+	Success bool
+	Message string
+}
+
+// AsError reports the failure the response carries, or nil when it succeeded.
+func (r SetModeResponse) AsError() error {
+	if r.Success {
+		return nil
+	}
+	return fmt.Errorf("request was not successful: %s", r.Message)
 }

@@ -41,28 +41,38 @@ func splitLines(b []byte) []string {
 }
 
 // hunks walks the LCS backtrace and emits one block per run of changes, with
-// up to `context` unchanged lines on each side.
+// up to `context` unchanged lines on each side. Runs whose context windows
+// touch are merged, so no line is printed twice.
 func hunks(a, b []string) []string {
 	const context = 2
 
 	ops := lcsOps(a, b)
 
-	var out []string
+	// Context windows around each run of changes, then merged.
+	type span struct{ lo, hi int }
+	var spans []span
 	for i := 0; i < len(ops); {
 		if ops[i].kind == opEqual {
 			i++
 			continue
 		}
-		// Extend to the end of this run of changes.
 		j := i
 		for j < len(ops) && ops[j].kind != opEqual {
 			j++
 		}
-		lo := max(i-context, 0)
-		hi := min(j+context, len(ops))
+		s := span{max(i-context, 0), min(j+context, len(ops))}
+		if n := len(spans); n > 0 && s.lo <= spans[n-1].hi {
+			spans[n-1].hi = max(spans[n-1].hi, s.hi)
+		} else {
+			spans = append(spans, s)
+		}
+		i = j
+	}
 
+	out := make([]string, 0, len(spans))
+	for _, s := range spans {
 		var h strings.Builder
-		for _, op := range ops[lo:hi] {
+		for _, op := range ops[s.lo:s.hi] {
 			switch op.kind {
 			case opEqual:
 				fmt.Fprintf(&h, "\t  %s\n", op.text)
@@ -73,7 +83,6 @@ func hunks(a, b []string) []string {
 			}
 		}
 		out = append(out, h.String())
-		i = j
 	}
 	return out
 }

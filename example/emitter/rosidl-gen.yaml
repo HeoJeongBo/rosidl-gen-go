@@ -13,6 +13,7 @@ search_paths:
 
 generate:
   - demo_msgs/msg/State
+  - demo_msgs/srv/SetMode
 
 # Claimed by ./main.go, not by the core schema.
 docs:

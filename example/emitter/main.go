@@ -48,22 +48,16 @@ func (e mdIndex) Emit(g *gogen.Generator) ([]gogen.File, error) {
 	b.WriteString("| --- | --- | --- |\n")
 
 	for _, n := range g.Selected() {
-		ident, ok := g.GoName(n)
-		if !ok {
-			return nil, fmt.Errorf("%s: no Go identifier assigned", n)
-		}
-		// A service resolves to two message bodies, which the generator names
-		// <ident>Request and <ident>Response; counting across both is why this
-		// walks Messages rather than Message.
+		// A service resolves to two message bodies, so walk Messages rather
+		// than Message and ask the generator what it named each one — a .srv
+		// becomes <prefix>Request and <prefix>Response.
 		msgs, err := g.Index().Messages(n)
 		if err != nil {
 			return nil, err
 		}
-		fields := 0
 		for _, m := range msgs {
-			fields += len(m.Fields)
+			fmt.Fprintf(&b, "| `%s` | `%s` | %d |\n", m.Name, g.MessageIdent(n, m), len(m.Fields))
 		}
-		fmt.Fprintf(&b, "| `%s` | `%s` | %d |\n", n, ident, fields)
 	}
 
 	// File.Name is resolved relative to the config file, not to `out`, so an
