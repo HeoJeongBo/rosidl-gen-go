@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/HeoJeongBo/rosidl-gen-go/main/rosidl-gen.schema.json",
+  "title": "rosidl-gen configuration",
+  "description": "Configuration for rosidl-gen, which generates Go types from ROS 2 .msg/.srv definitions. Every path is resolved relative to this file.",
+  "type": "object",
+  "required": ["out", "package", "generate"],
+  "properties": {
+    "out": {
+      "type": "string",
+      "description": "Directory generated files are written to. Stale *.g.go files directly inside it are removed; nothing else is touched."
+    },
+    "package": {
+      "type": "string",
+      "description": "Go package name declared by every generated file.",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "search_paths": {
+      "type": "array",
+      "description": "Directories scanned for ament packages: either a package itself (a directory holding package.xml) or a directory of them. The scan does not descend further than one level. Earlier entries win. ${VAR} is expanded, and an entry whose variable is unset is skipped.",
+      "items": { "type": "string" }
+    },
+    "generate": {
+      "type": "array",
+      "description": "Interfaces to emit. Nested dependencies are pulled in automatically.",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]+/(\\*\\*|(msg|srv)/([A-Za-z0-9_]+|\\*))$",
+        "examples": ["my_msgs/**", "my_msgs/msg/*", "my_msgs/msg/Thing", "my_msgs/srv/DoThing"]
+      }
+    },
+    "imports": {
+      "type": "object",
+      "description": "Go import path for each qualifier used in `external`.",
+      "additionalProperties": { "type": "string" },
+      "examples": [{ "ros": "github.com/lesomnus/cdr/ros" }]
+    },
+    "external": {
+      "type": "object",
+      "description": "Interfaces bound to a Go type that already exists instead of being generated. A qualified value resolves through `imports`; an unqualified one must be hand-written in the output package. A .srv maps to the prefix of its Request/Response pair.",
+      "additionalProperties": { "type": "string" }
+    },
+    "rename": {
+      "type": "object",
+      "description": "Override the Go type name derived from an interface name. Needed only to break a collision.",
+      "additionalProperties": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+    },
+    "emit": {
+      "type": "object",
+      "description": "Optional emission toggles.",
+      "additionalProperties": false,
+      "properties": {
+        "as_error": {
+          "type": "boolean",
+          "description": "Emit AsError() on a service response carrying `bool success` and `string message`. Default true.",
+          "default": true
+        }
+      }
+    },
+    "names": {
+      "type": "object",
+      "description": "Mirror a C++ topic/service name header into Go constants. Claimed by the built-in cppnames emitter.",
+      "required": ["header", "out"],
+      "additionalProperties": false,
+      "properties": {
+        "header": { "type": "string", "description": "The C++ header to read." },
+        "out": { "type": "string", "description": "Generated Go file, relative to this config rather than to `out`." },
+        "source": { "type": "string", "description": "Path recorded in the generated `// source:` line. Defaults to `header` as written." },
+        "comment": { "type": "string", "description": "Doc block rendered under the source line, one comment line per input line." }
+      }
+    }
+  }
+}

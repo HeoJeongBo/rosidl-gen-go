@@ -24,6 +24,8 @@ type Emitter interface {
 
 // Run emits the core output plus every extra emitter and resolves each file to
 // its absolute path. Two producers claiming the same path is an error.
+//
+// [Resolve] must already have run. The package-level [Run] does both.
 func (g *Generator) Run(extra ...Emitter) (*Output, error) {
 	files, err := g.Emit()
 	if err != nil {
@@ -67,8 +69,12 @@ func (g *Generator) Run(extra ...Emitter) (*Output, error) {
 }
 
 // Run resolves cfg's interface set and emits everything in one call: the
-// programmatic equivalent of the CLI. Use [Output.Write] on the result, or
-// [Output.Check] for -check semantics.
+// programmatic equivalent of the CLI, and the entry point most callers want.
+// Use [Output.Write] on the result, or [Output.Check] for -check semantics.
+//
+// It is [New] + [Generator.Resolve] + [Generator.Run]; reach for those
+// directly only when you need the Generator in between, for instance to
+// inspect [Generator.Selected] before emitting.
 func Run(cfg *Config, extra ...Emitter) (*Output, error) {
 	g, err := New(cfg)
 	if err != nil {

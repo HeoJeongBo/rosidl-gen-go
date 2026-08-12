@@ -16,12 +16,31 @@ correctly, which keeps the generated code readable and the codec replaceable.
 ```sh
 go run github.com/HeoJeongBo/rosidl-gen-go -config rosidl-gen.yaml         # generate
 go run github.com/HeoJeongBo/rosidl-gen-go -config rosidl-gen.yaml -check  # verify, write nothing
-go run github.com/HeoJeongBo/rosidl-gen-go -config rosidl-gen.yaml -v      # list resolved interfaces
+go run github.com/HeoJeongBo/rosidl-gen-go -config rosidl-gen.yaml -n      # dry run
 ```
 
 `-check` re-renders everything, compares it to disk byte for byte, and reports
-`missing`, `outdated`, and `stale` files. Commit the generated files and run
-`-check` in CI so interface drift fails the build instead of shipping quietly.
+which files drifted **and how** — a reordered field breaks the wire, a reflowed
+comment does not, and only the diff tells them apart. Commit the generated
+files and run `-check` in CI so drift fails the build instead of shipping
+quietly.
+
+Subcommands, for when something is not doing what you expected:
+
+| | |
+| --- | --- |
+| `list` | every interface the search paths contain, with the selected ones marked |
+| `explain <pkg/kind/Type>` | why that interface is in the output, traced back to the `generate` pattern |
+| `init` | a commented config skeleton on stdout — redirect it yourself; nothing is written |
+| `version` | `KEY=value` lines |
+
+Flags come before a subcommand (`rosidl-gen -config x list`), and a bare
+`rosidl-gen [flags]` still means generate, so existing invocations are
+unaffected.
+
+Exit codes are `0` success, `1` error, `3` drift under `-check`, so CI can tell
+stale output from a broken config. Note that `go run` and `go tool` collapse a
+non-zero status to 1; build the binary if you need to distinguish them.
 
 The repository ships a self-contained example; run it from a checkout:
 
@@ -68,9 +87,23 @@ packages) and `emit.as_error` (see below).
 
 Core keys are strict: a typo is an error. An unknown top-level section is kept
 for an extension emitter to claim — `names:` is claimed by the built-in
-`cppnames` emitter — and anything left unclaimed is an error, so typos in
-extension sections fail loudly too. A `generate` pattern matching nothing is
-also an error.
+`cppnames` emitter — and anything left unclaimed is an error when output is
+about to be produced, so a section no emitter honours cannot pass unnoticed.
+The read-only subcommands are lenient about it, since a config written for a
+program that registers its own emitters still describes an interface set worth
+listing.
+
+A `generate` pattern that matches nothing is an error too, and it distinguishes
+a wrong pattern (it names the packages it did find) from an empty index (it
+names the paths it scanned). The latter almost always means a `search_paths`
+entry was dropped — `list` reports each drop with its reason.
+
+[`rosidl-gen.schema.json`](rosidl-gen.schema.json) describes the format for
+editors. Point yours at it with a modeline at the top of your config:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/HeoJeongBo/rosidl-gen-go/main/rosidl-gen.schema.json
+```
 
 ## What gets emitted
 
@@ -187,7 +220,9 @@ lines — the two ways an entry can go missing without anything failing.
 
 ## Verification
 
-- `go test ./...` — parser and name-header unit tests
+- `go test ./...` — unit tests for the parser, the pattern grammar, config
+  validation, identifier collisions, and the prune invariants, plus a check of
+  the committed goldens, so an emission change fails locally rather than in CI
 - CI (`.github/workflows/ci.yaml`) — gofmt, vet, tests, and a byte-check of the
   committed golden output under `example/out` and `example/emitter/out`
 - `scripts/verify-reference.sh` — check the generator against a project outside

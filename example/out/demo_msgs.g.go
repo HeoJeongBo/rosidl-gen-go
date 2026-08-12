@@ -81,10 +81,9 @@ func NewState() State {
 }
 
 // SetModeType is the rcl typename of demo_msgs/srv/SetMode.
-const SetModeType = "demo_msgs/srv/SetMode"
-
-// SetMode service: demo_msgs/srv/SetMode
+//
 // Switch the device into the requested mode.
+const SetModeType = "demo_msgs/srv/SetMode"
 
 // SetModeRequest is demo_msgs/srv/SetMode_Request.
 //

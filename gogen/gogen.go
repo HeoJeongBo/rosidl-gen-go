@@ -11,9 +11,13 @@ import (
 
 // File is one generated source file.
 type File struct {
-	// Name is the file name, without a directory.
+	// Name is where the file goes, and what it is relative to depends on who
+	// produced it: a core file resolves inside the config's `out` directory,
+	// while an [Emitter]'s file resolves against the config file's directory,
+	// so an emitter can write outside `out`.
 	Name string
-	// Body is gofmt-ed Go source.
+	// Body is the file's contents. Core output is gofmt-ed; an emitter's is
+	// whatever it returned.
 	Body []byte
 }
 
@@ -331,18 +335,22 @@ func (g *Generator) emitPackage(pkg string, names []rosidl.Name) (File, error) {
 			return File{}, err
 		}
 
+		// A .srv's leading comment documents the service as a whole. It hangs
+		// off the typename constant, which is the service's identity in the
+		// generated package; emitted between declarations instead, it attaches
+		// to nothing and never reaches `go doc`.
 		fmt.Fprintf(&body, "// %sType is the rcl typename of %s.\n", g.goName[n], n)
-		fmt.Fprintf(&body, "const %sType = %q\n\n", g.goName[n], n.String())
-
 		if n.Kind == rosidl.KindSrv {
 			s, err := g.ix.Service(n)
 			if err != nil {
 				return File{}, err
 			}
 			if len(s.Doc) > 0 {
-				fmt.Fprintf(&body, "// %s service: %s\n%s\n", g.goName[n], n, CommentBlock("", s.Doc))
+				body.WriteString("//\n")
+				body.WriteString(CommentBlock("", s.Doc))
 			}
 		}
+		fmt.Fprintf(&body, "const %sType = %q\n\n", g.goName[n], n.String())
 
 		for _, m := range msgs {
 			if err := g.emitMessage(&body, imports, n, m); err != nil {
