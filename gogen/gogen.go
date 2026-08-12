@@ -25,9 +25,10 @@ type Generator struct {
 	external map[rosidl.Name]string
 	rename   map[rosidl.Name]string
 
-	selected []rosidl.Name
-	inSet    map[rosidl.Name]bool
-	goName   map[rosidl.Name]string
+	selected   []rosidl.Name
+	inSet      map[rosidl.Name]bool
+	goName     map[rosidl.Name]string
+	provenance map[rosidl.Name]Provenance
 }
 
 // New builds a Generator over the definitions reachable from cfg's search paths.
@@ -38,24 +39,27 @@ func New(cfg *Config) (*Generator, error) {
 	}
 
 	g := &Generator{
-		cfg:      cfg,
-		ix:       ix,
-		external: map[rosidl.Name]string{},
-		rename:   map[rosidl.Name]string{},
-		inSet:    map[rosidl.Name]bool{},
-		goName:   map[rosidl.Name]string{},
+		cfg:        cfg,
+		ix:         ix,
+		external:   map[rosidl.Name]string{},
+		rename:     map[rosidl.Name]string{},
+		inSet:      map[rosidl.Name]bool{},
+		goName:     map[rosidl.Name]string{},
+		provenance: map[rosidl.Name]Provenance{},
 	}
+	// LoadConfig already rejected malformed keys with the config path and the
+	// section named; a caller that built a Config by hand gets that context here.
 	for _, k := range sortedKeys(cfg.External) {
 		n, err := rosidl.ParseName(k, "")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("external %q: %w", k, err)
 		}
 		g.external[n] = cfg.External[k]
 	}
 	for _, k := range sortedKeys(cfg.Rename) {
 		n, err := rosidl.ParseName(k, "")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("rename %q: %w", k, err)
 		}
 		g.rename[n] = cfg.Rename[k]
 	}
@@ -73,17 +77,25 @@ func (g *Generator) Config() *Config { return g.cfg }
 // assigns a Go identifier to each selected interface. It fails on an unresolved
 // reference or on two interfaces claiming the same Go identifier.
 func (g *Generator) Resolve() error {
-	var queue []rosidl.Name
+	type pending struct {
+		name rosidl.Name
+		prov Provenance
+	}
+
+	var queue []pending
 	for _, pattern := range g.cfg.Generate {
 		matched, err := g.ix.Match(pattern)
 		if err != nil {
 			return err
 		}
-		queue = append(queue, matched...)
+		for _, n := range matched {
+			queue = append(queue, pending{n, Provenance{Pattern: pattern}})
+		}
 	}
 
 	for len(queue) > 0 {
-		n := queue[0]
+		p := queue[0]
+		n := p.name
 		queue = queue[1:]
 		if g.inSet[n] {
 			continue
@@ -96,6 +108,9 @@ func (g *Generator) Resolve() error {
 		}
 		g.inSet[n] = true
 		g.selected = append(g.selected, n)
+		// First reason wins, matching the breadth-first order: the shortest
+		// chain from a `generate` pattern is the one worth reporting.
+		g.provenance[n] = p.prov
 
 		msgs, err := g.ix.Messages(n)
 		if err != nil {
@@ -114,21 +129,30 @@ func (g *Generator) Resolve() error {
 					return fmt.Errorf("%s field %q: unresolved type %s (add it to `external` or a search path)",
 						n, f.Name, ref)
 				}
-				queue = append(queue, ref)
+				queue = append(queue, pending{ref, Provenance{Parent: n, Field: f.Name}})
 			}
 		}
 	}
 
 	slices.SortFunc(g.selected, func(a, b rosidl.Name) int { return strings.Compare(a.String(), b.String()) })
 
+	// Every identifier the core emission puts in the output package, so a
+	// collision fails here instead of in the consumer's build. gofmt cannot
+	// catch it: format.Source parses, it does not type-check.
 	owner := map[string]rosidl.Name{}
 	claim := func(ident string, n rosidl.Name) error {
 		if prev, ok := owner[ident]; ok {
+			if prev == n {
+				return fmt.Errorf("%s emits the Go identifier %q twice", n, ident)
+			}
 			return fmt.Errorf("Go identifier %q claimed by both %s and %s; add a `rename` entry", ident, prev, n)
 		}
 		owner[ident] = n
 		return nil
 	}
+	// registry.g.go declares this unconditionally.
+	owner["GeneratedTypes"] = rosidl.Name{}
+
 	for _, n := range g.selected {
 		base := n.Type
 		if r, ok := g.rename[n]; ok {
@@ -148,6 +172,13 @@ func (g *Generator) Resolve() error {
 			if err := claim(ident, n); err != nil {
 				return err
 			}
+			// A constructor is emitted only for a message that declares
+			// non-zero defaults, so only claim the name when it will exist.
+			if len(defaultedFields(m)) > 0 {
+				if err := claim("New"+ident, n); err != nil {
+					return err
+				}
+			}
 			for _, c := range m.Consts {
 				if err := claim(ident+Pascal(c.Name), n); err != nil {
 					return err
@@ -158,8 +189,65 @@ func (g *Generator) Resolve() error {
 	return nil
 }
 
+// defaultedFields are the fields whose declared default differs from the Go
+// zero value, i.e. the ones a constructor has to restate.
+func defaultedFields(m rosidl.Message) []rosidl.Field {
+	var out []rosidl.Field
+	for _, f := range m.Fields {
+		if f.Default != "" && !isZeroDefault(f) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // Selected returns the resolved interface set, sorted.
 func (g *Generator) Selected() []rosidl.Name { return slices.Clone(g.selected) }
+
+// Provenance says why an interface ended up in the resolved set: either a
+// `generate` pattern matched it directly, or another interface referenced it
+// from a field. Exactly one of Pattern and Parent is set.
+type Provenance struct {
+	// Pattern is the `generate` entry that matched, when the interface was
+	// requested directly.
+	Pattern string
+	// Parent is the interface whose field pulled this one in.
+	Parent rosidl.Name
+	// Field is that field's name in the .msg.
+	Field string
+}
+
+// Provenance reports why n is in the resolved set. ok is false for an
+// interface that was not selected.
+func (g *Generator) Provenance(n rosidl.Name) (Provenance, bool) {
+	p, ok := g.provenance[n]
+	return p, ok
+}
+
+// Externals returns the interfaces bound to an existing Go type by `external`,
+// sorted. They are deliberately absent from Selected: nothing is emitted for
+// them, but an emitter documenting the interface set still needs to see them.
+func (g *Generator) Externals() []rosidl.Name {
+	out := make([]rosidl.Name, 0, len(g.external))
+	for n := range g.external {
+		out = append(out, n)
+	}
+	slices.SortFunc(out, func(a, b rosidl.Name) int { return strings.Compare(a.String(), b.String()) })
+	return out
+}
+
+// ExternalType returns the Go type `external` binds n to, e.g. "ros.Header".
+func (g *Generator) ExternalType(n rosidl.Name) (string, bool) {
+	s, ok := g.external[n]
+	return s, ok
+}
+
+// MessageIdent is the Go type name emitted for one message body: the type name
+// itself for a .msg, or <prefix>Request / <prefix>Response for a .srv half.
+// Emitters need it because GoName returns only the shared prefix of a service.
+func (g *Generator) MessageIdent(owner rosidl.Name, m rosidl.Message) string {
+	return g.messageIdent(owner, m)
+}
 
 // GoName returns the Go identifier assigned to a message, or the shared prefix
 // of a service's Request/Response pair.
@@ -311,7 +399,6 @@ func (g *Generator) emitMessage(b *strings.Builder, imports map[string]bool, own
 	b.WriteString("//\n// Field order is the CDR wire layout.\n")
 	fmt.Fprintf(b, "type %s struct {\n", ident)
 
-	var defaults []rosidl.Field
 	for _, f := range m.Fields {
 		b.WriteString(CommentBlock("\t", f.Doc))
 		goType, err := g.goType(f.Type, imports)
@@ -319,13 +406,11 @@ func (g *Generator) emitMessage(b *strings.Builder, imports map[string]bool, own
 			return fmt.Errorf("%s field %q: %w", m.Name, f.Name, err)
 		}
 		fmt.Fprintf(b, "\t%s %s%s\n", Pascal(f.Name), goType, fieldNote(f))
-		// A default that equals the Go zero value needs no constructor.
-		if f.Default != "" && !isZeroDefault(f) {
-			defaults = append(defaults, f)
-		}
 	}
 	b.WriteString("}\n\n")
 
+	// Same predicate Resolve claims `New<ident>` with, so the two cannot drift.
+	defaults := defaultedFields(m)
 	if len(defaults) > 0 {
 		if err := g.emitDefaults(b, ident, m, defaults); err != nil {
 			return err

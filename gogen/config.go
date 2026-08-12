@@ -4,6 +4,7 @@ package gogen
 
 import (
 	"fmt"
+	"go/token"
 	"os"
 	"path/filepath"
 	"slices"
@@ -95,6 +96,8 @@ func LoadConfig(path string) (*Config, error) {
 		extra:   map[string]ast.Node{},
 		claimed: map[string]bool{},
 	}
+	// Duplicate keys, core or extension, are a parse error: goccy rejects them
+	// before this loop runs. TestLoadConfigRejectsDuplicateKeys pins that.
 	for _, kv := range mapping.Values {
 		key := kv.Key.String()
 		var dst any
@@ -116,9 +119,6 @@ func LoadConfig(path string) (*Config, error) {
 		case "emit":
 			dst = &c.Emit
 		default:
-			if _, dup := c.extra[key]; dup {
-				return nil, fmt.Errorf("%s: duplicate section %q", path, key)
-			}
 			c.extra[key] = kv.Value
 			continue
 		}
@@ -127,23 +127,65 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
-	if c.Out == "" || c.Package == "" {
-		return nil, fmt.Errorf("%s: `out` and `package` are required", path)
-	}
-	if len(c.Generate) == 0 {
-		return nil, fmt.Errorf("%s: `generate` is empty", path)
-	}
-	for _, k := range sortedKeys(c.External) {
-		if _, err := rosidl.ParseName(k, ""); err != nil {
-			return nil, fmt.Errorf("%s: external %q: %w", path, k, err)
-		}
-		if q, _, ok := strings.Cut(c.External[k], "."); ok {
-			if _, known := c.Imports[q]; !known {
-				return nil, fmt.Errorf("%s: external %q uses qualifier %q with no `imports` entry", path, k, q)
-			}
-		}
+	if err := c.validate(path); err != nil {
+		return nil, err
 	}
 	return &c, nil
+}
+
+func (c *Config) validate(path string) error {
+	switch {
+	case c.Out == "" && c.Package == "":
+		return fmt.Errorf("%s: `out` and `package` are required", path)
+	case c.Out == "":
+		return fmt.Errorf("%s: `out` is required (the directory to write generated files to)", path)
+	case c.Package == "":
+		return fmt.Errorf("%s: `package` is required (the Go package name for generated files)", path)
+	}
+	// Caught here rather than by gofmt: an invalid package name otherwise
+	// surfaces as a parse error against a generated file the user never wrote.
+	if !isGoIdent(c.Package) {
+		return fmt.Errorf("%s: package %q is not a valid Go identifier", path, c.Package)
+	}
+	if len(c.Generate) == 0 {
+		return fmt.Errorf("%s: `generate` is empty; list the interfaces to emit, e.g. `- my_msgs/**`", path)
+	}
+
+	for _, k := range sortedKeys(c.External) {
+		if _, err := rosidl.ParseName(k, ""); err != nil {
+			return fmt.Errorf("%s: external %q: %w", path, k, err)
+		}
+		v := c.External[k]
+		q, rest, qualified := strings.Cut(v, ".")
+		if qualified {
+			if _, known := c.Imports[q]; !known {
+				return fmt.Errorf("%s: external %q uses qualifier %q with no `imports` entry", path, k, q)
+			}
+			if !isGoIdent(rest) {
+				return fmt.Errorf("%s: external %q: %q is not a valid Go type name", path, k, rest)
+			}
+		} else if !isGoIdent(v) {
+			return fmt.Errorf("%s: external %q: %q is not a valid Go type name", path, k, v)
+		}
+	}
+
+	// `rename` was previously validated deep inside New, where the error
+	// reached the user with no config path and no mention of the section.
+	for _, k := range sortedKeys(c.Rename) {
+		if _, err := rosidl.ParseName(k, ""); err != nil {
+			return fmt.Errorf("%s: rename %q: %w", path, k, err)
+		}
+		if v := c.Rename[k]; !isGoIdent(v) {
+			return fmt.Errorf("%s: rename %q: %q is not a valid Go identifier", path, k, v)
+		}
+	}
+	return nil
+}
+
+// isGoIdent reports whether s can be used as a Go identifier: a non-keyword
+// identifier that is exported where the caller needs it to be.
+func isGoIdent(s string) bool {
+	return token.IsIdentifier(s) && !token.IsKeyword(s)
 }
 
 // Section strictly decodes the top-level extension section key into v and
@@ -185,25 +227,60 @@ func (c *Config) Path(p string) string {
 // referencing an unset variable, or naming a directory that does not exist, is
 // dropped — that keeps an optional path such as `${ROS_ROOT}/share` a no-op on
 // a machine without ROS while still using it when one is present.
+//
+// Dropping silently is what makes an optional path work, but it is also the
+// usual reason a `generate` pattern matches nothing. Use [Config.SearchPathReport]
+// to see what was dropped and why.
 func (c *Config) ResolvedSearchPaths() []string {
-	out := make([]string, 0, len(c.SearchPaths))
+	paths, _ := c.SearchPathReport()
+	return paths
+}
+
+// DroppedPath is a search path that was configured but not scanned.
+type DroppedPath struct {
+	// Path is the entry as written in the config.
+	Path string
+	// Reason says why it was skipped, in lower case and without punctuation.
+	Reason string
+}
+
+// SearchPathReport resolves the search paths and, alongside the ones that will
+// be scanned, reports every entry that was dropped and why.
+func (c *Config) SearchPathReport() (paths []string, dropped []DroppedPath) {
 	for _, raw := range c.SearchPaths {
-		unset := false
+		var missingVar string
 		p := os.Expand(raw, func(k string) string {
 			v, ok := os.LookupEnv(k)
-			if !ok || v == "" {
-				unset = true
+			if !ok {
+				missingVar = k
+			} else if v == "" {
+				missingVar = k + " is empty"
 			}
 			return v
 		})
-		if unset {
+		if missingVar != "" {
+			dropped = append(dropped, DroppedPath{raw, "${" + missingVar + "} is not set"})
 			continue
 		}
-		p = c.Path(p)
-		if info, err := os.Stat(p); err != nil || !info.IsDir() {
-			continue
+
+		abs := c.Path(p)
+		info, err := os.Stat(abs)
+		switch {
+		case os.IsNotExist(err):
+			dropped = append(dropped, DroppedPath{raw, "no such directory: " + abs})
+		case err != nil:
+			dropped = append(dropped, DroppedPath{raw, err.Error()})
+		case !info.IsDir():
+			dropped = append(dropped, DroppedPath{raw, "not a directory: " + abs})
+		default:
+			paths = append(paths, abs)
 		}
-		out = append(out, p)
 	}
-	return out
+	return paths, dropped
+}
+
+// KnownSections lists the top-level config keys the core schema understands,
+// sorted. An extension emitter claims anything else via [Config.Section].
+func KnownSections() []string {
+	return []string{"emit", "external", "generate", "imports", "out", "package", "rename", "search_paths"}
 }

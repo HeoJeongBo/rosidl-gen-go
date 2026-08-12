@@ -2,6 +2,7 @@ package rosidl
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,10 @@ type Index struct {
 	files map[Name]string
 	msgs  map[Name]Message
 	srvs  map[Name]Service
+	// roots is kept so a pattern that matched nothing can say where the
+	// generator actually looked. Without it the error blames the pattern for
+	// what is nearly always a search-path problem.
+	roots []string
 }
 
 // NewIndex discovers every .msg and .srv reachable from searchPaths. A search
@@ -33,6 +38,7 @@ func NewIndex(searchPaths []string) (*Index, error) {
 		files: map[Name]string{},
 		msgs:  map[Name]Message{},
 		srvs:  map[Name]Service{},
+		roots: slices.Clone(searchPaths),
 	}
 	for _, root := range searchPaths {
 		info, err := os.Stat(root)
@@ -246,9 +252,52 @@ func (ix *Index) Match(pattern string) ([]Name, error) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("pattern %q matched no interface", pattern)
+		return nil, ix.noMatchError(pattern)
 	}
 	return out, nil
+}
+
+// Packages returns the ament package names the index found, sorted.
+func (ix *Index) Packages() []string {
+	seen := map[string]bool{}
+	for n := range ix.files {
+		seen[n.Package] = true
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// noMatchError explains a pattern that selected nothing. An empty index is a
+// different failure from a wrong pattern — it means nothing was scanned — and
+// saying so is the difference between a one-line fix and an afternoon.
+func (ix *Index) noMatchError(pattern string) error {
+	if len(ix.files) == 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "pattern %q matched no interface: no ament packages were found", pattern)
+		if len(ix.roots) == 0 {
+			b.WriteString("\n\tno search path was scanned; every `search_paths` entry was skipped")
+			b.WriteString("\n\trun `rosidl-gen list` to see why each one was dropped")
+			return errors.New(b.String())
+		}
+		b.WriteString("\n\tscanned:")
+		for _, r := range ix.roots {
+			fmt.Fprintf(&b, "\n\t  %s", r)
+		}
+		b.WriteString("\n\ta search path must be an ament package (a directory holding package.xml)")
+		b.WriteString("\n\tor a directory of them; the scan does not descend further than that")
+		return errors.New(b.String())
+	}
+
+	pkgs := ix.Packages()
+	var b strings.Builder
+	fmt.Fprintf(&b, "pattern %q matched no interface\n\tpackages found: %s",
+		pattern, strings.Join(pkgs, ", "))
+	b.WriteString("\n\trun `rosidl-gen list` for the full interface list")
+	return errors.New(b.String())
 }
 
 func matchName(pattern string, n Name) (bool, error) {

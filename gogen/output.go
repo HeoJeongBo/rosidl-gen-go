@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -46,16 +47,25 @@ type WriteStats struct {
 	OutDir string
 }
 
+// Stale returns the *.g.go files Write would remove from the output directory,
+// sorted. It reads nothing else and writes nothing, so it is what a dry run
+// shows before a destructive prune.
+func (o *Output) Stale() ([]string, error) { return staleIn(o.outDir, o.files) }
+
 // Write writes every file and prunes stale *.g.go files from the output
 // directory (non-recursively; files this run emitted are never pruned, and
 // nothing without the .g.go suffix is ever touched, so hand-written code in
 // the same directory is safe).
+//
+// Each file is written to a temporary name and renamed into place, so a reader
+// never observes a half-written generated file — the prune step then runs only
+// if every write succeeded.
 func (o *Output) Write() (WriteStats, error) {
 	for _, p := range o.paths {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return WriteStats{}, err
 		}
-		if err := os.WriteFile(p, o.files[p], 0o644); err != nil {
+		if err := writeFileAtomic(p, o.files[p]); err != nil {
 			return WriteStats{}, err
 		}
 	}
@@ -70,6 +80,29 @@ func (o *Output) Write() (WriteStats, error) {
 		Pruned:     pruned,
 		OutDir:     o.outDir,
 	}, nil
+}
+
+// writeFileAtomic replaces path with body via a same-directory temporary file,
+// so an interrupted run leaves either the old file or the new one.
+func writeFileAtomic(path string, body []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename succeeded
+
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Check compares the on-disk output against what this run would write, and
@@ -97,19 +130,11 @@ func (o *Output) Check() error {
 		}
 	}
 
-	entries, err := os.ReadDir(o.outDir)
-	if err != nil && !os.IsNotExist(err) {
+	stale, err := staleIn(o.outDir, o.files)
+	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".g.go") {
-			continue
-		}
-		p := filepath.Join(o.outDir, e.Name())
-		if _, ours := o.files[p]; !ours {
-			drift.Stale = append(drift.Stale, p)
-		}
-	}
+	drift.Stale = append(drift.Stale, stale...)
 
 	if len(drift.Missing)+len(drift.Outdated)+len(drift.Stale) > 0 {
 		return drift
@@ -150,15 +175,18 @@ func (e *DriftError) Problems() []string {
 	return out
 }
 
-// pruneStale removes *.g.go left behind by a previous run whose config listed
-// interfaces this run no longer generates. Without it a dropped package keeps
-// compiling from a file nothing regenerates.
-func pruneStale(dir string, keep map[string][]byte) (int, error) {
+// staleIn lists the *.g.go files in dir that keep does not claim, sorted. The
+// scan is non-recursive and the suffix test is the only selector, which is what
+// keeps hand-written code in the same directory out of reach.
+func staleIn(dir string, keep map[string][]byte) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, err
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	n := 0
+	var out []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".g.go") {
 			continue
@@ -167,10 +195,24 @@ func pruneStale(dir string, keep map[string][]byte) (int, error) {
 		if _, ours := keep[p]; ours {
 			continue
 		}
-		if err := os.Remove(p); err != nil {
-			return n, err
-		}
-		n++
+		out = append(out, p)
 	}
-	return n, nil
+	slices.Sort(out)
+	return out, nil
+}
+
+// pruneStale removes *.g.go left behind by a previous run whose config listed
+// interfaces this run no longer generates. Without it a dropped package keeps
+// compiling from a file nothing regenerates.
+func pruneStale(dir string, keep map[string][]byte) (int, error) {
+	stale, err := staleIn(dir, keep)
+	if err != nil {
+		return 0, err
+	}
+	for i, p := range stale {
+		if err := os.Remove(p); err != nil {
+			return i, err
+		}
+	}
+	return len(stale), nil
 }
