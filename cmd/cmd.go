@@ -29,6 +29,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"generate", "emit the configured interfaces (default)", runGenerate},
+		{"names", "emit only the `names:` mirror; needs no ROS install", runNames},
 		{"list", "list the interfaces the search paths contain", runList},
 		{"explain", "trace why an interface is in the output", runExplain},
 		{"init", "print a commented config skeleton", runInit},

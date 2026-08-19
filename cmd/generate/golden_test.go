@@ -42,11 +42,11 @@ func asStale(err error, target **StaleOutput) bool {
 func TestUnclaimedSectionIsStrictOnlyForOutput(t *testing.T) {
 	const cfg = "../../example/emitter/rosidl-gen.yaml"
 
-	if _, _, err := load(cfg, false); err != nil {
+	if _, err := load(cfg, false); err != nil {
 		t.Errorf("read-only load rejected a config with a third-party section: %v", err)
 	}
 
-	_, _, err := load(cfg, true)
+	_, err := load(cfg, true)
 	if err == nil {
 		t.Fatal("generation accepted a section no emitter claimed")
 	}

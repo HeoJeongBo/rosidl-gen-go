@@ -67,6 +67,16 @@ func runGenerate(args []string) error {
 	})
 }
 
+func runNames(args []string) error {
+	fs := newFlagSet("names", "names [flags]")
+	configPath := configFlag(fs)
+	dryRun := fs.Bool("n", false, "report what would be written; write nothing")
+	if err := parse(fs, args, 0); err != nil {
+		return err
+	}
+	return generate.Names(generate.Options{ConfigPath: *configPath, DryRun: *dryRun})
+}
+
 func runList(args []string) error {
 	fs := newFlagSet("list", "list [flags]")
 	configPath := configFlag(fs)

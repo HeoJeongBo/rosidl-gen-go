@@ -10,8 +10,15 @@
 //	  header: include/names.h   # the C++ header to mirror
 //	  out: ros/names.g.go       # config-relative output file
 //	  source: include/names.h   # optional `// source:` spelling
+//	  doc: false                # optional; mirror the header's comments (default true)
+//	  standalone: true          # optional; emitted by `names`, not by `generate`
 //	  comment: |                # optional extra doc block
 //	    Rename in the header, not here.
+//
+// The mirror needs nothing but the header, so [Emitter.Render] runs without a
+// ROS installation. `standalone` plus the `names` subcommand turn that into a
+// build-time artifact: the header can then be edited by someone who cannot run
+// the generator at all.
 package cppnames
 
 import (
@@ -42,7 +49,20 @@ type Config struct {
 	// Comment is an extra doc block rendered below the source line, one Go
 	// comment line per input line. Empty means none.
 	Comment string `yaml:"comment"`
+	// Doc mirrors the header's comments onto the generated declarations.
+	// Defaults to true. Set it false when the mirror is a build-time artifact:
+	// the comments are then the only part of the header that a Go consumer
+	// never needs, and dropping them keeps a comment edit from reflowing the
+	// const block's gofmt alignment.
+	Doc *bool `yaml:"doc"`
+	// Standalone marks the mirror as the `names` subcommand's output rather
+	// than `generate`'s. `generate` then neither emits nor checks it, but still
+	// reserves its path so the output directory's stale scan leaves it alone.
+	Standalone bool `yaml:"standalone"`
 }
+
+// doc reports whether header comments are mirrored; absent means yes.
+func (c Config) doc() bool { return c.Doc == nil || *c.Doc }
 
 // Emitter mirrors the configured header; it implements [gogen.Emitter].
 type Emitter struct {
@@ -69,17 +89,31 @@ func FromConfig(cfg *gogen.Config) (e *Emitter, ok bool, err error) {
 // Name identifies the emitter in errors.
 func (e *Emitter) Name() string { return "cppnames" }
 
-// Emit parses the header and renders the Go mirror. It reads the two
+// Out is the configured output file, relative to the config file.
+func (e *Emitter) Out() string { return e.c.Out }
+
+// Standalone reports whether `generate` should leave this mirror to the `names`
+// subcommand.
+func (e *Emitter) Standalone() bool { return e.c.Standalone }
+
+// Emit implements [gogen.Emitter]. It needs only the configuration the
+// Generator carries, so it delegates to [Emitter.Render].
+func (e *Emitter) Emit(g *gogen.Generator) ([]gogen.File, error) { return e.Render(g.Config()) }
+
+// Render parses the header and renders the Go mirror. It reads the two
 // constructs a name header is built from: `const char*` scalars and
 // `std::array<std::pair<const char*, const char*>>` tables.
-func (e *Emitter) Emit(g *gogen.Generator) ([]gogen.File, error) {
-	header := g.Config().Path(e.c.Header)
+//
+// It looks at no part of the resolved interface set, which is what lets the
+// `names` subcommand run it without a ROS installation.
+func (e *Emitter) Render(cfg *gogen.Config) ([]gogen.File, error) {
+	header := cfg.Path(e.c.Header)
 	b, err := os.ReadFile(header)
 	if err != nil {
 		return nil, err
 	}
 
-	body, err := render(g.Config().Package, string(b), e.c)
+	body, err := render(cfg.Package, string(b), e.c)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", header, err)
 	}
@@ -117,14 +151,18 @@ func render(pkg, src string, c Config) ([]byte, error) {
 
 	body.WriteString("const (\n")
 	for _, s := range scalars {
-		body.WriteString(gogen.CommentBlock("\t", s.Doc))
+		if c.doc() {
+			body.WriteString(gogen.CommentBlock("\t", s.Doc))
+		}
 		fmt.Fprintf(&body, "\t%s = %q\n", goNameIdent(s.Symbol), s.Value)
 	}
 	body.WriteString(")\n\n")
 
 	for _, t := range tables {
 		ident := goNameIdent(t.Symbol)
-		body.WriteString(gogen.CommentBlock("", t.Doc))
+		if c.doc() {
+			body.WriteString(gogen.CommentBlock("", t.Doc))
+		}
 		fmt.Fprintf(&body, "var %s = map[string]string{\n", ident)
 		for _, k := range t.Keys {
 			fmt.Fprintf(&body, "\t%q: %q,\n", k, t.ByKey[k])

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,8 +38,21 @@ func (o Options) out() io.Writer {
 	return o.Out
 }
 
+// loaded is what load resolved from the config: the config itself, the built-in
+// emitters that claimed a section, and the paths a standalone emitter owns but
+// does not produce in this run.
+type loaded struct {
+	cfg      *gogen.Config
+	extra    []gogen.Emitter
+	reserved []string
+}
+
 // load reads the config and registers the built-in emitters that claim a
 // section in it.
+//
+// A standalone emitter is registered as reserved rather than as an emitter: its
+// output belongs to another run, so this one must neither write nor check it,
+// yet must still keep the stale scan off it.
 //
 // strict rejects any section no emitter took, because when output is about to
 // be produced an unclaimed section means an emitter silently did not run. The
@@ -46,23 +60,25 @@ func (o Options) out() io.Writer {
 // registers its own emitters still describes an interface set worth listing,
 // and refusing to read it would make those commands useless exactly where they
 // help most.
-func load(path string, strict bool) (*gogen.Config, []gogen.Emitter, error) {
+func load(path string, strict bool) (loaded, error) {
 	cfg, err := gogen.LoadConfig(path)
 	if err != nil {
-		return nil, nil, err
+		return loaded{}, err
 	}
 
-	var extra []gogen.Emitter
+	l := loaded{cfg: cfg}
 	if names, ok, err := cppnames.FromConfig(cfg); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
+		return loaded{}, fmt.Errorf("%s: %w", path, err)
+	} else if ok && names.Standalone() {
+		l.reserved = append(l.reserved, cfg.Path(names.Out()))
 	} else if ok {
-		extra = append(extra, names)
+		l.extra = append(l.extra, names)
 	}
 	if unknown := cfg.UnclaimedSections(); strict && len(unknown) > 0 {
-		return nil, nil, fmt.Errorf("%s: unknown config section(s): %s\n\tknown sections: %s",
+		return loaded{}, fmt.Errorf("%s: unknown config section(s): %s\n\tknown sections: %s",
 			path, strings.Join(unknown, ", "), strings.Join(gogen.KnownSections(), ", "))
 	}
-	return cfg, extra, nil
+	return l, nil
 }
 
 // resolve builds a Generator and expands the interface set, reporting the
@@ -95,11 +111,11 @@ func printSearchPaths(w io.Writer, cfg *gogen.Config) {
 
 // Run executes one generation according to o.
 func Run(o Options) error {
-	cfg, extra, err := load(o.ConfigPath, true)
+	l, err := load(o.ConfigPath, true)
 	if err != nil {
 		return err
 	}
-	g, err := resolve(cfg, o)
+	g, err := resolve(l.cfg, o)
 	if err != nil {
 		return err
 	}
@@ -110,10 +126,11 @@ func Run(o Options) error {
 		}
 	}
 
-	out, err := g.Run(extra...)
+	out, err := g.Run(l.extra...)
 	if err != nil {
 		return err
 	}
+	out.Reserve(l.reserved...)
 
 	switch {
 	case o.Check:
@@ -199,19 +216,66 @@ func dryRun(out *gogen.Output, o Options) error {
 	return nil
 }
 
+// Names emits the `names:` mirror and nothing else. It reads the header and no
+// search path at all, so unlike [Run] it needs no ROS installation — which is
+// the point: the header is C++, owned by people who have no reason to carry the
+// Go generator's prerequisites, and a mirror regenerated at build time keeps a
+// header edit from ever failing on them.
+//
+// There is no check mode. A file this command owns is a build-time artifact,
+// so there is no committed copy to have gone stale; drop `standalone` from the
+// config and `generate` emits and checks the mirror as tracked output instead.
+//
+// It deliberately does not build a [gogen.Output]: one holding a single file
+// would report every other *.g.go in the directory as stale, and writing it
+// would delete them.
+func Names(o Options) error {
+	cfg, err := gogen.LoadConfig(o.ConfigPath)
+	if err != nil {
+		return err
+	}
+	e, ok, err := cppnames.FromConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("%s: %w", o.ConfigPath, err)
+	}
+	if !ok {
+		return fmt.Errorf("%s: no `names:` section to emit", o.ConfigPath)
+	}
+
+	files, err := e.Render(cfg)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		path := cfg.Path(f.Name)
+		if o.DryRun {
+			fmt.Fprintf(o.out(), "write: %s\n", path)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := gogen.WriteFile(path, f.Body); err != nil {
+			return err
+		}
+		fmt.Fprintf(o.out(), "rosidl-gen: wrote %s\n", path)
+	}
+	return nil
+}
+
 // List reports every interface the search paths contain, which is what you
 // need in order to write a `generate` pattern. Selected interfaces are marked.
 //
 // The search paths are always reported here, not only under -v: when the list
 // comes back empty, the paths are the answer.
 func List(o Options) error {
-	cfg, _, err := load(o.ConfigPath, false)
+	l, err := load(o.ConfigPath, false)
 	if err != nil {
 		return err
 	}
-	printSearchPaths(o.out(), cfg)
+	printSearchPaths(o.out(), l.cfg)
 
-	g, err := gogen.New(cfg)
+	g, err := gogen.New(l.cfg)
 	if err != nil {
 		return err
 	}
@@ -243,11 +307,11 @@ func List(o Options) error {
 // Explain traces why an interface is in the output: the chain of field
 // references back to the `generate` pattern that asked for it.
 func Explain(o Options, target string) error {
-	cfg, _, err := load(o.ConfigPath, false)
+	l, err := load(o.ConfigPath, false)
 	if err != nil {
 		return err
 	}
-	g, err := resolve(cfg, o)
+	g, err := resolve(l.cfg, o)
 	if err != nil {
 		return err
 	}

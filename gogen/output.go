@@ -18,10 +18,24 @@ type Output struct {
 	files      map[string][]byte
 	paths      []string // emission order; deterministic
 	interfaces int
+	reserved   map[string]bool
 }
 
 // OutDir returns the resolved output directory stale files are pruned from.
 func (o *Output) OutDir() string { return o.outDir }
+
+// Reserve marks absolute paths that this run does not produce but that another
+// run owns, so the stale scan leaves them alone. Without it a build-time
+// artifact sharing the output directory is reported stale by every [Output.Check]
+// and deleted by every [Output.Write].
+func (o *Output) Reserve(paths ...string) {
+	if o.reserved == nil {
+		o.reserved = make(map[string]bool, len(paths))
+	}
+	for _, p := range paths {
+		o.reserved[p] = true
+	}
+}
 
 // Paths returns the absolute path of every file in emission order.
 func (o *Output) Paths() []string { return append([]string(nil), o.paths...) }
@@ -50,7 +64,7 @@ type WriteStats struct {
 // Stale returns the *.g.go files Write would remove from the output directory,
 // sorted. It reads nothing else and writes nothing, so it is what a dry run
 // shows before a destructive prune.
-func (o *Output) Stale() ([]string, error) { return staleIn(o.outDir, o.files) }
+func (o *Output) Stale() ([]string, error) { return staleIn(o.outDir, o.files, o.reserved) }
 
 // Write writes every file and prunes stale *.g.go files from the output
 // directory (non-recursively; files this run emitted are never pruned, and
@@ -65,12 +79,12 @@ func (o *Output) Write() (WriteStats, error) {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return WriteStats{}, err
 		}
-		if err := writeFileAtomic(p, o.files[p]); err != nil {
+		if err := WriteFile(p, o.files[p]); err != nil {
 			return WriteStats{}, err
 		}
 	}
 
-	pruned, err := pruneStale(o.outDir, o.files)
+	pruned, err := pruneStale(o.outDir, o.files, o.reserved)
 	if err != nil {
 		return WriteStats{}, err
 	}
@@ -82,9 +96,14 @@ func (o *Output) Write() (WriteStats, error) {
 	}, nil
 }
 
-// writeFileAtomic replaces path with body via a same-directory temporary file,
-// so an interrupted run leaves either the old file or the new one.
-func writeFileAtomic(path string, body []byte) error {
+// WriteFile replaces path with body via a same-directory temporary file, so an
+// interrupted run leaves either the old file or the new one.
+//
+// [Output.Write] uses it for every file it owns. It is exported for a caller
+// emitting a single file on its own — a standalone emitter, say — which must
+// not go through an Output: an Output built from one file would treat every
+// other *.g.go in the directory as stale and delete it.
+func WriteFile(path string, body []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
 	if err != nil {
 		return err
@@ -130,7 +149,7 @@ func (o *Output) Check() error {
 		}
 	}
 
-	stale, err := staleIn(o.outDir, o.files)
+	stale, err := staleIn(o.outDir, o.files, o.reserved)
 	if err != nil {
 		return err
 	}
@@ -175,10 +194,10 @@ func (e *DriftError) Problems() []string {
 	return out
 }
 
-// staleIn lists the *.g.go files in dir that keep does not claim, sorted. The
-// scan is non-recursive and the suffix test is the only selector, which is what
-// keeps hand-written code in the same directory out of reach.
-func staleIn(dir string, keep map[string][]byte) ([]string, error) {
+// staleIn lists the *.g.go files in dir that neither keep nor reserved claims,
+// sorted. The scan is non-recursive and the suffix test is the only selector,
+// which is what keeps hand-written code in the same directory out of reach.
+func staleIn(dir string, keep map[string][]byte, reserved map[string]bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -192,7 +211,7 @@ func staleIn(dir string, keep map[string][]byte) ([]string, error) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
-		if _, ours := keep[p]; ours {
+		if _, ours := keep[p]; ours || reserved[p] {
 			continue
 		}
 		out = append(out, p)
@@ -204,8 +223,8 @@ func staleIn(dir string, keep map[string][]byte) ([]string, error) {
 // pruneStale removes *.g.go left behind by a previous run whose config listed
 // interfaces this run no longer generates. Without it a dropped package keeps
 // compiling from a file nothing regenerates.
-func pruneStale(dir string, keep map[string][]byte) (int, error) {
-	stale, err := staleIn(dir, keep)
+func pruneStale(dir string, keep map[string][]byte, reserved map[string]bool) (int, error) {
+	stale, err := staleIn(dir, keep, reserved)
 	if err != nil {
 		return 0, err
 	}
