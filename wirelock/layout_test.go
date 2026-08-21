@@ -30,8 +30,8 @@ func TestClassifyLayoutSameTypeReorder(t *testing.T) {
 
 	got := ClassifyLayout(locked, current)
 	require.Contains(t, got, "REORDERED")
-	require.Contains(t, got, "index 0 position -> velocity")
-	require.Contains(t, got, "index 1 velocity -> position")
+	require.Contains(t, got, "position: index 0 -> 1")
+	require.Contains(t, got, "velocity: index 1 -> 0")
 }
 
 // TestClassifyLayout covers what must fire and what must stay silent. The silent
@@ -47,22 +47,31 @@ func TestClassifyLayout(t *testing.T) {
 			"same-type swap, non-adjacent",
 			fields("a", "float64", "mid", "uint8", "b", "float64"),
 			fields("b", "float64", "mid", "uint8", "a", "float64"),
-			[]string{"REORDERED", "index 0 a -> b", "index 2 b -> a"},
+			[]string{"REORDERED", "a: index 0 -> 2", "b: index 2 -> 0"},
 		},
 		{
 			"three same-typed fields rotated",
 			fields("x", "int32", "y", "int32", "z", "int32"),
 			fields("z", "int32", "x", "int32", "y", "int32"),
-			[]string{"REORDERED", "index 0 x -> z"},
+			[]string{"REORDERED", "x: index 0 -> 1", "z: index 2 -> 0"},
 		},
 		{
 			"same-type swap inside an otherwise identical message",
 			fields("h", "std_msgs/msg/Header", "p", "[]float64", "q", "[]float64"),
 			fields("h", "std_msgs/msg/Header", "q", "[]float64", "p", "[]float64"),
-			[]string{"REORDERED", "index 1 p -> q"},
+			[]string{"REORDERED", "p: index 1 -> 2", "q: index 2 -> 1"},
 		},
 		// Shapes still decide when they differ; these must keep reading exactly
 		// as they did before names existed.
+		{
+			// Ambiguous by nature: either `b` slid down a slot, or `a` and `b`
+			// were renamed past each other. No record can resolve it, and only
+			// one of the two readings is safe to be wrong about.
+			"a surviving name that changed index, amid renames",
+			fields("a", "string", "b", "string"),
+			fields("b", "string", "c", "string"),
+			[]string{"REORDERED", "b: index 1 -> 0"},
+		},
 		{
 			"different-type swap still classified by shape",
 			fields("a", "string", "b", "uint8"),
@@ -118,13 +127,6 @@ func TestClassifyLayout(t *testing.T) {
 			"every field renamed",
 			fields("a", "string", "b", "uint8"),
 			fields("x", "string", "y", "uint8"),
-		},
-		{
-			"renamed to a name another field used to have, without moving",
-			// Not a permutation: `b` is gone, so this reads as two renames
-			// rather than a swap. Ambiguous by nature — no record can resolve it.
-			fields("a", "string", "b", "string"),
-			fields("b", "string", "c", "string"),
 		},
 	}
 	for _, tc := range harmless {

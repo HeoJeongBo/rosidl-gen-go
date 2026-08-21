@@ -44,11 +44,17 @@ func TestStaleLockCannotMaskALaterReorder(t *testing.T) {
 	require.NotEmpty(t, DiffSnapshot(locked, renamedOnly),
 		"passing here is what lets step 2 go unnoticed")
 
-	// Step 2: the swap, against a lock that was never refreshed. This is the
-	// case a shape-only check and a silent-rename check both miss.
+	// Step 2: the swap, against a lock that was never refreshed. Failing is not
+	// enough — it has to be told apart from the rename it superficially looks
+	// like, or the reader is handed "no release coordination needed" about a
+	// change that silently swaps two values on the wire.
+	//
+	// `velocity` is the witness: it survives both edits and changes index.
 	swappedAfterRename := snap(fields("velocity", "float64", "pos", "float64"))
-	require.NotEmpty(t, DiffSnapshot(locked, swappedAfterRename),
-		"a swap must never be invisible, whatever happened to the names before it")
+	c = only(t, DiffSnapshot(locked, swappedAfterRename))
+	require.Equal(t, SeverityBreaking, c.Severity,
+		"a swap reached through a stale lock must not read as a harmless rename")
+	require.Contains(t, c.Detail, "velocity: index 1 -> 0")
 
 	// And against a lock that WAS refreshed after the rename, it is named for
 	// what it is.
@@ -106,7 +112,7 @@ func TestDiffSnapshotSeverity(t *testing.T) {
 			snap(fields("a", "int32", "c", "float64", "b", "float64"),
 				Constant{"MODE_IDLE", "0"}, Constant{"MODE_TORQUE", "5"}),
 			SeverityBreaking,
-			[]string{"REORDERED", "index 1 b -> c"},
+			[]string{"REORDERED", "b: index 1 -> 2", "c: index 2 -> 1"},
 		},
 		{
 			"field widened",

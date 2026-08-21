@@ -84,10 +84,19 @@ func DiffLayout(locked, current Layout) []Change {
 // same types in a different order.
 //
 // A pure RENAME returns "": the wire is untouched, and failing on it is what
-// makes people switch a check off. The two are told apart by whether the names
-// are a permutation of each other. A rename combined with a reorder in one edit
-// reads as a rename and is not reported; nothing can distinguish those without
-// asking the author which field is which.
+// makes people switch a check off.
+//
+// The two are told apart by asking, of every name that appears on BOTH sides,
+// whether it still sits at the same index. A rename makes a name vanish and
+// another appear; a reorder makes a surviving name move. Asking instead whether
+// the names are a permutation is not enough, and the gap is reachable: rename a
+// field in one commit, leave the lock stale, then swap it with its neighbour in
+// the next. The result is neither a permutation nor harmless.
+//
+// Ambiguous cases resolve toward "moved". When the locked names are `a, b` and
+// the current ones are `b, c`, no record can say whether b slid down a slot or
+// two fields were renamed past each other — and only one of those readings is
+// safe to be wrong about.
 func ClassifyLayout(locked, current []Field) string {
 	lockedShapes, currentShapes := shapesOf(locked), shapesOf(current)
 	if !slices.Equal(lockedShapes, currentShapes) {
@@ -98,18 +107,28 @@ func ClassifyLayout(locked, current []Field) string {
 	if slices.Equal(lockedNames, currentNames) {
 		return ""
 	}
-	if !isPermutation(lockedNames, currentNames) {
+
+	moved := movedNames(lockedNames, currentNames)
+	if len(moved) == 0 {
 		return "" // renamed, not moved
 	}
+	return "fields REORDERED, so values arrive swapped with no decode error (" +
+		strings.Join(moved, "; ") + ") — the types are identical, so nothing but the names records it"
+}
 
-	var diffs []string
-	for i := range lockedNames {
-		if lockedNames[i] != currentNames[i] {
-			diffs = append(diffs, fmt.Sprintf("index %d %s -> %s", i, lockedNames[i], currentNames[i]))
+// movedNames describes every name present in both vectors that changed index.
+func movedNames(locked, current []string) []string {
+	at := make(map[string]int, len(current))
+	for i, n := range current {
+		at[n] = i
+	}
+	var out []string
+	for i, n := range locked {
+		if j, ok := at[n]; ok && j != i {
+			out = append(out, fmt.Sprintf("%s: index %d -> %d", n, i, j))
 		}
 	}
-	return "fields REORDERED, so values arrive swapped with no decode error (" +
-		strings.Join(diffs, "; ") + ") — the types are identical, so nothing but the names records it"
+	return out
 }
 
 func shapesOf(fields []Field) []string {
