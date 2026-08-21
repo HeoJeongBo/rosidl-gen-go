@@ -59,16 +59,16 @@ func DiffLayout(locked, current Layout) []Change {
 	for _, name := range slices.Sorted(maps.Keys(locked)) {
 		cur, ok := current[name]
 		if !ok {
-			out = append(out, Change{name, "left the locked set: nothing reaches it any more"})
+			out = append(out, Change{Type: name, Detail: "left the locked set: nothing reaches it any more"})
 			continue
 		}
 		if d := ClassifyLayout(locked[name], cur); d != "" {
-			out = append(out, Change{name, d})
+			out = append(out, Change{Type: name, Detail: d})
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(current)) {
 		if _, ok := locked[name]; !ok {
-			out = append(out, Change{name, "entered the locked set: " + joinFields(current[name])})
+			out = append(out, Change{Type: name, Detail: "entered the locked set: " + joinFields(current[name])})
 		}
 	}
 	slices.SortFunc(out, func(a, b Change) int { return strings.Compare(a.Type, b.Type) })

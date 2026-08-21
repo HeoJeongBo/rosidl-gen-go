@@ -93,5 +93,10 @@ func runWirelock(args []string) error {
 	if err := parse(fs, args, 0); err != nil {
 		return err
 	}
-	return wirelock.Run(wirelock.Options{ConfigPath: *configPath, Check: *check})
+	version, _, _ := buildInfo()
+	return wirelock.Run(wirelock.Options{
+		ConfigPath: *configPath,
+		Check:      *check,
+		Generator:  "rosidl-gen-go " + version,
+	})
 }

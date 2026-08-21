@@ -1,9 +1,13 @@
 package wirelock
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/HeoJeongBo/rosidl-gen-go/gogen"
 	"github.com/HeoJeongBo/rosidl-gen-go/rosidl"
@@ -81,13 +85,48 @@ func (l *Lock) Check(current Set) ([]Change, error) {
 }
 
 // WriteLayout renders set to the lock file, creating parent directories. It is
-// [Lock.Write] for a lock that records field names, which is what the wirelock
-// command writes.
+// [Lock.Write] for a lock that records field names.
 func (l *Lock) WriteLayout(set Layout) error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(l.path, set.Format(), 0o644)
+}
+
+// WriteSnapshot renders s to the lock file, creating parent directories. This
+// is what the wirelock command writes.
+func (l *Lock) WriteSnapshot(s Snapshot, generator string) error {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(l.path, s.Format(generator), 0o644)
+}
+
+// LoadSnapshot reads the committed lock.
+//
+// A missing file is answered with the command that creates one. It is the first
+// thing a new consumer hits — they add the config section, run the check, and
+// get an errno — so it is worth more than a bare ENOENT.
+func (l *Lock) LoadSnapshot() (Snapshot, error) {
+	b, err := os.ReadFile(l.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Snapshot{}, fmt.Errorf(
+			"no lock at %s; run `rosidl-gen wirelock` to write one, then commit it", l.path)
+	}
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return ParseSnapshot(b)
+}
+
+// CheckSnapshot compares the committed lock against current and returns every
+// difference, at both severities.
+func (l *Lock) CheckSnapshot(current Snapshot) ([]Change, error) {
+	locked, err := l.LoadSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return DiffSnapshot(locked, current), nil
 }
 
 // LoadLayout reads the committed lock.
@@ -128,22 +167,49 @@ func Compute(g *gogen.Generator) (Set, error) {
 	return l.Set(), nil
 }
 
-// ComputeLayout is [Compute] keeping the field names, which is what the wirelock
-// command locks: without them a swap of two same-typed fields spells identically
-// and passes a check that has no other way to see it.
+// ComputeLayout is [Compute] keeping the field names: without them a swap of two
+// same-typed fields spells identically and passes a check that has no other way
+// to see it.
 func ComputeLayout(g *gogen.Generator) (Layout, error) {
-	out := Layout{}
+	s, err := ComputeSnapshot(g)
+	if err != nil {
+		return nil, err
+	}
+	return s.Fields, nil
+}
+
+// ComputeSnapshot renders everything a lock records — field layout and declared
+// constants — for every interface a resolved generator selected. It is what the
+// wirelock command locks.
+//
+// Resolve must already have run.
+func ComputeSnapshot(g *gogen.Generator) (Snapshot, error) {
+	out := Snapshot{Fields: Layout{}, Consts: map[string][]Constant{}}
 	for _, n := range g.Selected() {
 		msgs, err := g.Index().Messages(n)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", n, err)
+			return Snapshot{}, fmt.Errorf("%s: %w", n, err)
 		}
 		for _, m := range msgs {
+			name := m.Name.String()
+
 			fields := make([]Field, 0, len(m.Fields))
 			for _, f := range m.Fields {
 				fields = append(fields, Field{Name: f.Name, Shape: shapeOfType(f.Type)})
 			}
-			out[m.Name.String()] = fields
+			out.Fields[name] = fields
+
+			if len(m.Consts) == 0 {
+				continue
+			}
+			consts := make([]Constant, 0, len(m.Consts))
+			for _, c := range m.Consts {
+				consts = append(consts, Constant{Name: c.Name, Value: c.Value})
+			}
+			// Declaration order carries no meaning for a constant, and sorting
+			// keeps a reordered .msg from rewriting lines that did not change.
+			slices.SortFunc(consts, func(a, b Constant) int { return strings.Compare(a.Name, b.Name) })
+			out.Consts[name] = consts
 		}
 	}
 	return out, nil

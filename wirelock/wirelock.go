@@ -7,27 +7,34 @@
 // DEFINITION ITSELF MOVING — an upstream package changing under a floating
 // container tag, say, with no commit in the consumer's repository to blame.
 //
-// A lock is that missing reference. It records, per type, the ordered list of
-// field shapes CDR actually reads: widths, fixed-array lengths, and nested type
-// names. Field names, comments, constants, string bounds and sequence bounds do
-// not appear, because none of them reaches the wire — so the everyday edits that
-// make a byte-for-byte check unbearable pass a lock untouched, while a reorder
-// or an inserted field does not.
+// A lock is that missing reference. [Snapshot] is the current form: per type,
+// the ordered list of fields as `name shape` — widths, fixed-array lengths and
+// nested type names — plus the constants the type declares.
 //
-// The package deliberately does NOT decide what to lock or when to fail. Which
-// types matter is the consumer's policy — a generator knows the interfaces it
-// was asked to emit, not the subset a program actually puts on a wire — and
-// whether a given change is acceptable depends on which side deploys first,
+// What is absent matters as much. Comments, docs, string bounds and sequence
+// bounds never appear, because none of them reaches the wire; the everyday edits
+// that make a byte-for-byte check unbearable pass a lock untouched. Field NAMES
+// are present despite not being on the wire, because swapping two same-typed
+// fields changes no shape and would otherwise be invisible. CONSTANTS are
+// present for the mirror-image reason: they are never on the wire, so nothing
+// else can see one change between two builds that have to agree.
+//
+// Differences come back at two severities — see [Severity]. Both fail; they ask
+// different things of the reader.
+//
+// The package deliberately does NOT decide when to fail, or what a change means
+// for a release: whether it is acceptable depends on which side deploys first,
 // which no library can know.
 //
-// Typical use, from a test that owns both halves of that policy:
+// Typical use, from a command that owns that policy:
 //
-//	roots := []string{"friday_msgs/msg/MotorStateArray", "std_srvs/srv/Trigger"}
-//	current, err := wirelock.Registry(GeneratedTypes).Closure(roots)
-//	locked, err := wirelock.Parse(committed)
-//	for _, c := range wirelock.Diff(locked, current) {
-//		t.Errorf("%s: %s", c.Type, c.Detail)
-//	}
+//	lock, ok, err := wirelock.FromConfig(cfg)
+//	current, err := wirelock.ComputeSnapshot(resolvedGenerator)
+//	changes, err := lock.CheckSnapshot(current)
+//
+// [Set] and [Registry] are the original shape-only API, reading the layout out
+// of a consumer's generated Go by reflection instead of out of the definitions.
+// They still work and are still tested; new code wants ComputeSnapshot.
 package wirelock
 
 import (
@@ -190,11 +197,50 @@ func Nested(shape string) (string, bool) {
 	return base, true
 }
 
-// Change is one difference between two locks. Detail is prose for whoever has to
-// decide whether a release needs coordinating; nothing branches on it.
+// Severity says what a Change asks of the reader, which is the only question
+// they actually have.
+//
+// The two demand different things. A wire change means two programs must be
+// deployed together; a stale lock means one command and a commit. Reporting
+// both as "the lock differs" makes the cheap case look like the expensive one,
+// and a check whose failures all look expensive stops being read.
+type Severity int
+
+const (
+	// SeverityBreaking means the two sides have to ship together. It is the zero
+	// value so a Change built by the shape-only [Diff] keeps meaning exactly
+	// what it always did.
+	//
+	// It covers more than the bytes. A changed CONSTANT moves nothing on the
+	// wire and still lands here, because the sender and the receiver are built
+	// at different times from the same declaration: one ships 5, the other reads
+	// 7, and the demand on the reader — deploy them as a pair — is identical.
+	SeverityBreaking Severity = iota
+
+	// SeverityStale marks a difference that no deployment has to care about — a
+	// rename, a constant added, a type entering or leaving the set.
+	//
+	// It still fails the check. A lock allowed to sit stale stops describing
+	// what it locks: once it holds a name no field carries any more, a later
+	// reorder of that field is no longer a permutation of anything, and the
+	// expensive check goes quiet forever. Refreshing the lock is what keeps it
+	// able to do its job.
+	SeverityStale
+)
+
+func (s Severity) String() string {
+	if s == SeverityStale {
+		return "stale"
+	}
+	return "breaking"
+}
+
+// Change is one difference between two locks. Detail is prose for whoever has
+// to decide whether a release needs coordinating; only Severity is branched on.
 type Change struct {
-	Type   string
-	Detail string
+	Type     string
+	Detail   string
+	Severity Severity
 }
 
 // Diff reports every difference between a committed lock and a current one,
@@ -204,16 +250,16 @@ func Diff(locked, current Set) []Change {
 	for _, name := range slices.Sorted(maps.Keys(locked)) {
 		cur, ok := current[name]
 		if !ok {
-			out = append(out, Change{name, "left the locked set: nothing reaches it any more"})
+			out = append(out, Change{Type: name, Detail: "left the locked set: nothing reaches it any more"})
 			continue
 		}
 		if !slices.Equal(locked[name], cur) {
-			out = append(out, Change{name, Classify(locked[name], cur)})
+			out = append(out, Change{Type: name, Detail: Classify(locked[name], cur)})
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(current)) {
 		if _, ok := locked[name]; !ok {
-			out = append(out, Change{name, "entered the locked set: " + strings.Join(current[name], ", ")})
+			out = append(out, Change{Type: name, Detail: "entered the locked set: " + strings.Join(current[name], ", ")})
 		}
 	}
 	slices.SortFunc(out, func(a, b Change) int { return strings.Compare(a.Type, b.Type) })

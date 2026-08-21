@@ -24,6 +24,10 @@ type Options struct {
 	ConfigPath string
 	// Check verifies the committed lock and writes nothing.
 	Check bool
+	// Generator names the tool writing the lock, for its header comment. It is
+	// recorded so that a diff touching only the header reads as "the generator
+	// changed how it spells things" instead of as hundreds of wire changes.
+	Generator string
 	// Out receives progress; errors are returned, not printed.
 	Out io.Writer
 }
@@ -33,6 +37,13 @@ func (o Options) out() io.Writer {
 		return os.Stdout
 	}
 	return o.Out
+}
+
+func (o Options) generator() string {
+	if o.Generator == "" {
+		return "rosidl-gen-go"
+	}
+	return o.Generator
 }
 
 // Drift is returned by a failing check. It carries the changes so a caller can
@@ -72,44 +83,76 @@ func Run(o Options) error {
 	if err := g.Resolve(); err != nil {
 		return err
 	}
-	current, err := wirelock.ComputeLayout(g)
+	current, err := wirelock.ComputeSnapshot(g)
 	if err != nil {
 		return err
 	}
 
 	if !o.Check {
-		if err := lock.WriteLayout(current); err != nil {
+		if err := lock.WriteSnapshot(current, o.generator()); err != nil {
 			return err
 		}
-		fmt.Fprintf(o.out(), "rosidl-gen: %d types -> %s\n", len(current), lock.Path())
+		fmt.Fprintf(o.out(), "rosidl-gen: %d types -> %s\n", len(current.Fields), lock.Path())
 		return nil
 	}
 
-	changes, err := lock.CheckLayout(current)
+	changes, err := lock.CheckSnapshot(current)
 	if err != nil {
 		return err
 	}
 	if len(changes) == 0 {
-		fmt.Fprintf(o.out(), "rosidl-gen: %d types match %s\n", len(current), lock.Path())
+		fmt.Fprintf(o.out(), "rosidl-gen: %d types match %s\n", len(current.Fields), lock.Path())
 		return nil
 	}
 
-	// The markers exist so a consumer's CI can lift this block out of a build
-	// log. Anything that runs the generator inside a container relays its output
-	// through something that prefixes every line, and prefixed output cannot be
-	// parsed as a CI annotation.
+	return &Drift{Changes: changes, text: report(lock.Path(), changes)}
+}
+
+// report renders the drift for a human, split by what it asks of them.
+//
+// The markers exist so a consumer's CI can lift the block out of a build log.
+// Anything that runs the generator inside a container relays its output through
+// something that prefixes every line, and prefixed output cannot be parsed as a
+// CI annotation.
+func report(path string, changes []wirelock.Change) string {
+	var breaking, stale []wirelock.Change
+	for _, c := range changes {
+		if c.Severity == wirelock.SeverityStale {
+			stale = append(stale, c)
+			continue
+		}
+		breaking = append(breaking, c)
+	}
+
 	var b strings.Builder
 	b.WriteString("WIRE-LOCK-BEGIN\n")
-	fmt.Fprintf(&b, "the CDR wire layout changed against %s:\n", lock.Path())
-	for _, c := range changes {
-		fmt.Fprintf(&b, "  %s: %s\n", c.Type, c.Detail)
-	}
-	b.WriteString("\n")
-	b.WriteString("Field order IS the wire format, so this is a compatibility question, not a\n")
-	b.WriteString("formatting one. Unless every change above is a field appended at the end of an\n")
-	b.WriteString("OUTERMOST message, both sides of the wire must be deployed together.\n")
-	b.WriteString("If that is intended, re-run `rosidl-gen wirelock` and commit the lock.\n")
-	b.WriteString("WIRE-LOCK-END")
+	fmt.Fprintf(&b, "the generated interfaces no longer match %s\n", path)
 
-	return &Drift{Changes: changes, text: b.String()}
+	if len(breaking) > 0 {
+		b.WriteString("\nDEPLOY TOGETHER — a peer built before this change reads it differently.\n")
+		for _, c := range breaking {
+			fmt.Fprintf(&b, "  %s: %s\n", c.Type, c.Detail)
+		}
+		b.WriteString("\n")
+		b.WriteString("  Field order IS the wire format: CDR carries no names and no tags, so a\n")
+		b.WriteString("  reordered or resized field decodes into the wrong place with no error\n")
+		b.WriteString("  anywhere. Unless every line above is a field appended at the end of an\n")
+		b.WriteString("  OUTERMOST message, both sides have to ship as a pair.\n")
+	}
+
+	if len(stale) > 0 {
+		b.WriteString("\nLOCK STALE — nothing that reaches the wire changed.\n")
+		for _, c := range stale {
+			fmt.Fprintf(&b, "  %s: %s\n", c.Type, c.Detail)
+		}
+		b.WriteString("\n")
+		b.WriteString("  No release coordination is needed for these. They still fail because a\n")
+		b.WriteString("  lock left stale stops working: once it records a name no field carries\n")
+		b.WriteString("  any more, a later reorder of that field matches nothing and is never\n")
+		b.WriteString("  reported.\n")
+	}
+
+	b.WriteString("\nRe-run `rosidl-gen wirelock` and commit the lock with the change.\n")
+	b.WriteString("WIRE-LOCK-END")
+	return b.String()
 }
