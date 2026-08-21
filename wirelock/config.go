@@ -71,13 +71,42 @@ func (l *Lock) Load() (Set, error) {
 }
 
 // Check compares the committed lock against current and returns the
-// differences, or a [*DriftError] if the file cannot be read at all.
+// differences.
 func (l *Lock) Check(current Set) ([]Change, error) {
 	locked, err := l.Load()
 	if err != nil {
 		return nil, err
 	}
 	return Diff(locked, current), nil
+}
+
+// WriteLayout renders set to the lock file, creating parent directories. It is
+// [Lock.Write] for a lock that records field names, which is what the wirelock
+// command writes.
+func (l *Lock) WriteLayout(set Layout) error {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(l.path, set.Format(), 0o644)
+}
+
+// LoadLayout reads the committed lock.
+func (l *Lock) LoadLayout() (Layout, error) {
+	b, err := os.ReadFile(l.path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLayout(b)
+}
+
+// CheckLayout compares the committed lock against current and returns the
+// differences.
+func (l *Lock) CheckLayout(current Layout) ([]Change, error) {
+	locked, err := l.LoadLayout()
+	if err != nil {
+		return nil, err
+	}
+	return DiffLayout(locked, current), nil
 }
 
 // Compute renders the wire layout of every interface a resolved generator
@@ -92,18 +121,29 @@ func (l *Lock) Check(current Set) ([]Change, error) {
 //
 // Resolve must already have run.
 func Compute(g *gogen.Generator) (Set, error) {
-	out := Set{}
+	l, err := ComputeLayout(g)
+	if err != nil {
+		return nil, err
+	}
+	return l.Set(), nil
+}
+
+// ComputeLayout is [Compute] keeping the field names, which is what the wirelock
+// command locks: without them a swap of two same-typed fields spells identically
+// and passes a check that has no other way to see it.
+func ComputeLayout(g *gogen.Generator) (Layout, error) {
+	out := Layout{}
 	for _, n := range g.Selected() {
 		msgs, err := g.Index().Messages(n)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", n, err)
 		}
 		for _, m := range msgs {
-			shapes := make([]string, 0, len(m.Fields))
+			fields := make([]Field, 0, len(m.Fields))
 			for _, f := range m.Fields {
-				shapes = append(shapes, shapeOfType(f.Type))
+				fields = append(fields, Field{Name: f.Name, Shape: shapeOfType(f.Type)})
 			}
-			out[m.Name.String()] = shapes
+			out[m.Name.String()] = fields
 		}
 	}
 	return out, nil

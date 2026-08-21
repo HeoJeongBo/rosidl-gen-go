@@ -72,20 +72,20 @@ func Run(o Options) error {
 	if err := g.Resolve(); err != nil {
 		return err
 	}
-	current, err := wirelock.Compute(g)
+	current, err := wirelock.ComputeLayout(g)
 	if err != nil {
 		return err
 	}
 
 	if !o.Check {
-		if err := lock.Write(current); err != nil {
+		if err := lock.WriteLayout(current); err != nil {
 			return err
 		}
 		fmt.Fprintf(o.out(), "rosidl-gen: %d types -> %s\n", len(current), lock.Path())
 		return nil
 	}
 
-	changes, err := lock.Check(current)
+	changes, err := lock.CheckLayout(current)
 	if err != nil {
 		return err
 	}
