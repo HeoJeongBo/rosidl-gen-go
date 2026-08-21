@@ -14,6 +14,7 @@ import (
 	"github.com/HeoJeongBo/rosidl-gen-go/cppnames"
 	"github.com/HeoJeongBo/rosidl-gen-go/gogen"
 	"github.com/HeoJeongBo/rosidl-gen-go/rosidl"
+	"github.com/HeoJeongBo/rosidl-gen-go/wirelock"
 )
 
 // Options mirrors the CLI flags.
@@ -57,6 +58,14 @@ func load(path string, strict bool) (*gogen.Config, []gogen.Emitter, error) {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	} else if ok {
 		extra = append(extra, names)
+	}
+	// Claimed, never acted on. The lock belongs to `rosidl-gen wirelock`: a lock
+	// rewritten by every generation records whatever the definitions now say
+	// rather than what someone decided to accept. Claiming it here keeps strict
+	// mode from rejecting a config that declares one, and validates the section
+	// at generation time so a bad `out` surfaces now instead of at check time.
+	if _, _, err := wirelock.FromConfig(cfg); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if unknown := cfg.UnclaimedSections(); strict && len(unknown) > 0 {
 		return nil, nil, fmt.Errorf("%s: unknown config section(s): %s\n\tknown sections: %s",

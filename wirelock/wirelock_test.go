@@ -252,6 +252,13 @@ type demoArray struct {
 	hidden string //nolint:unused // asserts the unexported-field skip
 }
 
+// demoUnreferenced needs a type of its OWN: two registry keys sharing one Go
+// struct make the name lookup depend on map order, which is random.
+type demoUnreferenced struct {
+	Label string
+	Count int32
+}
+
 type demoRequest struct{ Command string }
 
 type demoResponse struct{ Success bool }
@@ -264,7 +271,7 @@ func demoRegistry() Registry {
 		"builtin_interfaces/msg/Time":   demoTime{},
 		"demo_msgs/srv/Run_Request":     demoRequest{},
 		"demo_msgs/srv/Run_Response":    demoResponse{},
-		"demo_msgs/msg/NeverReferenced": demoItem{},
+		"demo_msgs/msg/NeverReferenced": demoUnreferenced{},
 	}
 }
 

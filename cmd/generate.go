@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/HeoJeongBo/rosidl-gen-go/cmd/generate"
+	"github.com/HeoJeongBo/rosidl-gen-go/cmd/wirelock"
 )
 
 // newFlagSet builds a flag set that prints a usage line naming the subcommand,
@@ -83,4 +84,14 @@ func runExplain(args []string) error {
 		return err
 	}
 	return generate.Explain(generate.Options{ConfigPath: *configPath}, fs.Arg(0))
+}
+
+func runWirelock(args []string) error {
+	fs := newFlagSet("wirelock", "wirelock [flags]")
+	configPath := configFlag(fs)
+	check := fs.Bool("check", false, "verify the committed lock; write nothing")
+	if err := parse(fs, args, 0); err != nil {
+		return err
+	}
+	return wirelock.Run(wirelock.Options{ConfigPath: *configPath, Check: *check})
 }

@@ -305,5 +305,5 @@ func (c *Config) SearchPathReport() (paths []string, dropped []DroppedPath) {
 // KnownSections lists the top-level config keys the core schema understands,
 // sorted. An extension emitter claims anything else via [Config.Section].
 func KnownSections() []string {
-	return []string{"emit", "external", "generate", "imports", "out", "package", "rename", "search_paths"}
+	return []string{"emit", "external", "generate", "imports", "out", "package", "rename", "search_paths", "wirelock"}
 }

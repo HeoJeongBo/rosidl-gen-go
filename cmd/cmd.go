@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/HeoJeongBo/rosidl-gen-go/cmd/wirelock"
 	"github.com/HeoJeongBo/rosidl-gen-go/gogen"
 )
 
@@ -29,6 +30,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{"generate", "emit the configured interfaces (default)", runGenerate},
+		{"wirelock", "write or verify the CDR wire layout lock", runWirelock},
 		{"list", "list the interfaces the search paths contain", runList},
 		{"explain", "trace why an interface is in the output", runExplain},
 		{"init", "print a commented config skeleton", runInit},
@@ -75,6 +77,10 @@ func main(args []string) int {
 		fmt.Fprintf(os.Stderr, "rosidl-gen: %v\n", err)
 		var drift *gogen.DriftError
 		if errors.As(err, &drift) {
+			return exitDrift
+		}
+		var moved *wirelock.Drift
+		if errors.As(err, &moved) {
 			return exitDrift
 		}
 		return exitError
